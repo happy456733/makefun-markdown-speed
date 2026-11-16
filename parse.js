@@ -958,9 +958,10 @@ function flanking(text, i, j) {
   return { leftFlank, rightFlank, prev, next };
 }
 const AUTOLINK_RE = /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s\x00-\x1f<>]*|[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)>/;
-const EMAIL_RE = /^[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+/;
-const MAILTO_RE = /^(?:mailto:|xmpp:)([A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+)(?:\/[A-Za-z0-9@.]+)?/;
-const SCHEME_RE = /^(?:https?|ftp):\/\//i;
+const EMAIL_RE = /[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+/y;
+const MAILTO_RE = /(?:mailto:|xmpp:)([A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+)(?:\/[A-Za-z0-9@.]+)?/y;
+const SCHEME_RE = /(?:https?|ftp):\/\//iy;
+const DOMAIN_RE = /(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/y;
 const ATTR_RE = /\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/;
 const TAG_RE = new RegExp(
   '^(?:<!-->|<!--->|<!--[\\s\\S]*?-->|</[a-zA-Z][a-zA-Z0-9-]*\\s*>|<' +
@@ -1000,18 +1001,21 @@ let inLinkState = false;
 // hasOpenUnderscore: an unmatched _ opener exists, so a trailing _ run is
 // emphasis (marked tokenizes the emphasis first) and must not truncate an
 // email address.
+const WORDCHAR = /[\w-]/;
+const WWWPREV = /[\s*_~(]/;
 function gfmAutolink(text, i, prevCh, hasOpenUnderscore, limit) {
-  const sub = text.slice(i);
-  let m = MAILTO_RE.exec(sub);
+  MAILTO_RE.lastIndex = i;
+  let m = MAILTO_RE.exec(text);
   if (m) {
-    const after = sub[m[0].length];
-    if (after === undefined || !/[\w-]/.test(after) || (after === '_' && hasOpenUnderscore)) {
+    const after = text[i + m[0].length];
+    if (after === undefined || !WORDCHAR.test(after) || (after === '_' && hasOpenUnderscore)) {
       return { href: m[0], text: m[0], end: i + m[0].length };
     }
     return null;
   }
-  if (sub.startsWith('www.') && (prevCh === '' || /[\s*_~(]/.test(prevCh))) {
-    const dm = /^(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/.exec(sub.slice(4));
+  if (text.startsWith('www.', i) && (prevCh === '' || WWWPREV.test(prevCh))) {
+    DOMAIN_RE.lastIndex = i + 4;
+    const dm = DOMAIN_RE.exec(text);
     if (dm && dm[0] !== '') {
       let raw = 'www.' + dm[0];
       if (limit !== undefined && limit - i < raw.length) raw = raw.slice(0, limit - i);
@@ -1019,9 +1023,11 @@ function gfmAutolink(text, i, prevCh, hasOpenUnderscore, limit) {
       if (url !== 'www.' && url !== '') return { href: 'http://' + url, text: url, end: i + url.length };
     }
   }
-  m = SCHEME_RE.exec(sub);
+  SCHEME_RE.lastIndex = i;
+  m = SCHEME_RE.exec(text);
   if (m) {
-    const dm = /^(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/.exec(sub.slice(m[0].length));
+    DOMAIN_RE.lastIndex = i + m[0].length;
+    const dm = DOMAIN_RE.exec(text);
     if (!dm || dm[0] === '') return null;
     let raw = m[0] + dm[0];
     if (limit !== undefined && limit - i < raw.length) raw = raw.slice(0, limit - i);
@@ -1029,10 +1035,11 @@ function gfmAutolink(text, i, prevCh, hasOpenUnderscore, limit) {
     if (url === m[0] || url === '') return null;
     return { href: url, text: url, end: i + url.length };
   }
-  m = EMAIL_RE.exec(sub);
+  EMAIL_RE.lastIndex = i;
+  m = EMAIL_RE.exec(text);
   if (m) {
-    const after = sub[m[0].length];
-    if (after === undefined || !/[\w-]/.test(after) || (after === '_' && hasOpenUnderscore)) {
+    const after = text[i + m[0].length];
+    if (after === undefined || !WORDCHAR.test(after) || (after === '_' && hasOpenUnderscore)) {
       return { href: 'mailto:' + m[0], text: m[0], end: i + m[0].length };
     }
     return null;
