@@ -1130,6 +1130,7 @@ const isEmailChar = (c) => { const code = c.charCodeAt(0); return code < 128 && 
 // runs need not match in length) or a run of 2+ at the very end of the
 // label. Otherwise the label cannot match and no link forms.
 function labelBackticksOK(label) {
+  if (label.indexOf('`') < 0) return true;
   let i = 0;
   while (i < label.length) {
     if (label[i] === '\\') { i += 2; continue; }
