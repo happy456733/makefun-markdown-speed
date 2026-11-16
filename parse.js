@@ -176,6 +176,14 @@ function setextLevel(l) {
 // Backtick fences may not have backticks in the info string.
 function fenceStart(l) {
   const saveI = l.i, saveC = l.col, saveInd = l.ind;
+  // Count leading-whitespace CHARS (marked's indentCodeCompensation is
+  // char-based, not column-based).
+  let wsChars = 0;
+  {
+    let k = l.i;
+    if (l.ind > 0) { wsChars++; k++; }
+    while (k < l.s.length && (l.s[k] === ' ' || l.s[k] === '\t')) { wsChars++; k++; }
+  }
   const ind = lskipWS(l, 3);
   const c = lpeek(l);
   if (c !== '`' && c !== '~') { l.i = saveI; l.col = saveC; l.ind = saveInd; return null; }
@@ -183,7 +191,7 @@ function fenceStart(l) {
   while (lpeek(l) === c) { lnext(l); n++; }
   if (n < 3) { l.i = saveI; l.col = saveC; l.ind = saveInd; return null; }
   if (c === '`' && lrest(l).indexOf('`') >= 0) { l.i = saveI; l.col = saveC; l.ind = saveInd; return null; }
-  return { ch: c, len: n, indent: ind };
+  return { ch: c, len: n, indent: ind, wsChars };
 }
 // Fenced code close: same char, >= opening length, only spaces after.
 function fenceClose(l, ch, len) {
@@ -441,6 +449,13 @@ function listsMatch(list, li) {
 }
 
 // ---- block parsing (container-stack algorithm) ----
+// Strip up to n leading whitespace chars (spaces/tabs) from a fence
+// content line, like marked's indentCodeCompensation (char-based).
+function stripFenceIndent(line, n) {
+  let i = 0;
+  while (i < line.length && i < n && (line[i] === ' ' || line[i] === '\t')) i++;
+  return line.slice(i);
+}
 function parseBlocks(src) {
   const rawLines = src.split('\n');
   if (rawLines.length && rawLines[rawLines.length - 1] === '') rawLines.pop();
@@ -606,7 +621,7 @@ function parseBlocks(src) {
           continue;
         }
       }
-      if (allMatched && fcode) { lskipWS(l, fcode.indent); fcode.lines.push(lcontent()); continue; }
+      if (allMatched && fcode) { fcode.lines.push(stripFenceIndent(lcontent(), fcode.wsChars)); continue; }
       if (allMatched && icode) { lskipWS(l, 4); pendingBlanks.push(lcontent()); continue; }
       if (allMatched && html && html.type <= 5) { html.lines.push(lcontent()); html.endsAtEOF = isLastLine && srcEndsNL; continue; }
       if (allMatched && html && html.type >= 6) { html.followedByBlank = true; html = null; }
@@ -633,7 +648,7 @@ function parseBlocks(src) {
     // Open leaf continuations (only when all containers matched).
     if (fcode && allMatched) {
       if (fenceClose(l, fcode.ch, fcode.len)) { fcode = null; }
-      else { lskipWS(l, fcode.indent); fcode.lines.push(lcontent()); }
+      else { fcode.lines.push(stripFenceIndent(lcontent(), fcode.wsChars)); }
       continue;
     }
     // Fenced code inside a list item absorbs under-indented lines as lazy
@@ -652,7 +667,7 @@ function parseBlocks(src) {
         l.i = saveI; l.col = saveC; l.ind = saveInd;
         if (!startsBlock) {
           if (fenceClose(l, fcode.ch, fcode.len)) { fcode = null; }
-          else { lskipWS(l, fcode.indent); fcode.lines.push(lcontent()); }
+          else { fcode.lines.push(stripFenceIndent(lcontent(), fcode.wsChars)); }
           continue;
         }
       }
@@ -775,7 +790,7 @@ function parseBlocks(src) {
       noteBlockStart(top());
       // marked's indentCodeCompensation regex only matches backtick fences;
       // tilde fences are never dedented.
-      const node = { t: 'fcode', ch: fs.ch, len: fs.len, indent: fs.ch === '`' ? fs.indent : 0, info: lrest(l).trim(), lines: [] };
+      const node = { t: 'fcode', ch: fs.ch, len: fs.len, indent: fs.ch === '`' ? fs.indent : 0, wsChars: fs.ch === '`' ? fs.wsChars : 0, info: lrest(l).trim(), lines: [] };
       top().children.push(node);
       fcode = node;
       continue;
