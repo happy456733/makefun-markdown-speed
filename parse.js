@@ -1044,6 +1044,24 @@ function parseLabel(text, i) {
 }
 
 const EMAIL_CHARS = /[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]/;
+// True when every backtick in a link label fits marked's label regex:
+// part of a code span (opening run + non-backtick content + closing run,
+// runs need not match in length) or a run of 2+ at the very end of the
+// label. Otherwise the label cannot match and no link forms.
+function labelBackticksOK(label) {
+  let i = 0;
+  while (i < label.length) {
+    if (label[i] !== '`') { i++; continue; }
+    let j = i;
+    while (j < label.length && label[j] === '`') j++;
+    const next = label.indexOf('`', j);
+    if (next < 0) return (j - i) >= 2 && j === label.length;
+    let f = next;
+    while (f < label.length && label[f] === '`') f++;
+    i = f;
+  }
+  return true;
+}
 function parseInline(text, refs) {
   let head = null, tail = null;
   const delims = [];
@@ -1154,10 +1172,34 @@ function parseInline(text, refs) {
       let j = i;
       while (j < N && text[j] === '`') j++;
       const ticks = j - i;
+      // Marked tokenizes a link before a code span, but only when the
+      // label's backticks fit its label regex (complete code spans with
+      // possibly unequal runs, or 2+ backticks right before ']'). If they
+      // do, the code span must not swallow the closing ']'; if they don't,
+      // the link fails and the code span may cross the ']'.
+      let limit = N;
+      if (brackets.length > 0) {
+        const rb = text.indexOf(']', j);
+        if (rb > 0) {
+          const br = brackets[brackets.length - 1];
+          if (br.active && labelBackticksOK(text.slice(br.pos, rb))) {
+            let formsLink = false;
+            if (text[rb + 1] === '(' && parseInlineLink(text, rb + 1)) formsLink = true;
+            else if (text[rb + 1] === '[') {
+              const lab = parseLabel(text, rb + 1);
+              if (lab) {
+                const key = lab.label === '' ? normalizeLabel(text.slice(br.pos, rb)) : normalizeLabel(lab.label);
+                if (refs.get(key)) formsLink = true;
+              }
+            } else if (refs.get(normalizeLabel(text.slice(br.pos, rb)))) formsLink = true;
+            if (formsLink) limit = rb;
+          }
+        }
+      }
       let k = j, found = -1;
-      while (k < N) {
+      while (k < limit) {
         const e = text.indexOf('`', k);
-        if (e < 0) break;
+        if (e < 0 || e >= limit) break;
         let f = e;
         while (f < N && text[f] === '`') f++;
         if (f - e === ticks) { found = e; break; }
