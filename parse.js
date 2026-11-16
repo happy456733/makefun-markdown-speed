@@ -1119,6 +1119,10 @@ function parseLabel(text, i) {
 }
 
 const EMAIL_CHARS = /[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]/;
+// Fast ASCII lookup for EMAIL_CHARS (avoids a regex call per char).
+const EMAIL_TBL = new Uint8Array(128);
+for (const ch of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.!#$%&'*+/=?^_`{|}~-") EMAIL_TBL[ch.charCodeAt(0)] = 1;
+const isEmailChar = (c) => { const code = c.charCodeAt(0); return code < 128 && EMAIL_TBL[code] === 1; };
 // True when every backtick in a link label fits marked's label regex:
 // part of a code span (opening run + non-backtick content + closing run,
 // runs need not match in length) or a run of 2+ at the very end of the
@@ -1582,7 +1586,7 @@ function parseInline(text, refs) {
     // GFM extended autolinks (deferred: become links unless inside a link).
     const pc = i > 0 ? text[i - 1] : '';
     if (!inLinkState && (c === 'w' || c === 'h' || c === 'H' || c === 'f' || c === 'F' || c === 'm' || c === 'x' ||
-        (EMAIL_CHARS.test(c) && (pc === '' || !EMAIL_CHARS.test(pc))))) {
+        (isEmailChar(c) && (pc === '' || !isEmailChar(pc))))) {
       const hasOpenUnderscoreFn = () => {
         for (const d of delims) {
           if (d.ch === '_' && d.canOpen && d.alive && !d.done) return true;
