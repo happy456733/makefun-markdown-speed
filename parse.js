@@ -287,7 +287,9 @@ function listStart(l, paraOpen, paraInList) {
 }
 
 // ---- link reference definitions and tables ----
+const NEEDNORM = /[^\x00-\x7F]|[A-Z]|^\s|\s$|\s\s/;
 function normalizeLabel(label) {
+  if (!NEEDNORM.test(label)) return label;
   return label.replace(/\s+/g, ' ').trim().toLowerCase()
     .replace(/ß/g, 'ss')
     .replace(/ﬀ/g, 'ff').replace(/ﬁ/g, 'fi').replace(/ﬂ/g, 'fl')
