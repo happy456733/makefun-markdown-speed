@@ -552,7 +552,17 @@ function parseBlocks(src) {
         if (lpeek(l) !== '>') { l.i = sI; l.col = sC; l.ind = sInd; allMatched = false; break; }
         l.qb = l.col; // raw column of this (innermost-matched) '>' marker
         lnext(l);
-        if (lpeek(l) === ' ' || lpeek(l) === '\t') lskipWS(l, 1);
+        // After '>': one optional space is consumed. A tab is expanded
+        // from its column in the quote-content string (which still holds
+        // the '>' marker), then one space is stripped: e.g. '>\t' at
+        // base column 1 expands to 3 spaces, leaving 2.
+        if (lpeek(l) === ' ') lnext(l);
+        else if (lpeek(l) === '\t') {
+          // l.i stays on the tab; l.ind is the remainder spaces
+          // (lrest/lrestExpanded skip the tab char when ind > 0).
+          const base = l.col - l.qb;
+          l.ind = 4 - (base % 4) - 1;
+        }
         depth = i + 1;
       } else if (c.t === 'item') {
         if (lblank(l)) { depth = i + 1; continue; }
@@ -806,8 +816,16 @@ function parseBlocks(src) {
       else if (hb.type <= 5) {
         const nx = rawLines[li + 1];
         if (nx === undefined) { /* EOF: endsAtEOF decides */ }
-        else if (nx === '') node.followedByBlank = true;
-        else node.followedByNonBlank = true;
+        else {
+          // Blankness is judged in the block's container content
+          // (a '>'-only line is blank inside a quote).
+          const nl = makeLine(nx);
+          matchContainers(nl);
+          // Types 1-5: only a TRULY empty container-content line counts
+          // (marked's html regex \n+ spans empty lines only).
+          if (lrest(nl) === '') node.followedByBlank = true;
+          else node.followedByNonBlank = true;
+        }
       }
       continue;
     }
