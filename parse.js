@@ -771,7 +771,9 @@ function parseBlocks(src) {
       if (!started) { closeForLeaf(depth); started = true; }
       closePara();
       noteBlockStart(top());
-      const node = { t: 'fcode', ch: fs.ch, len: fs.len, indent: fs.indent, info: lrest(l).trim(), lines: [] };
+      // marked's indentCodeCompensation regex only matches backtick fences;
+      // tilde fences are never dedented.
+      const node = { t: 'fcode', ch: fs.ch, len: fs.len, indent: fs.ch === '`' ? fs.indent : 0, info: lrest(l).trim(), lines: [] };
       top().children.push(node);
       fcode = node;
       continue;
@@ -1052,6 +1054,7 @@ const EMAIL_CHARS = /[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]/;
 function labelBackticksOK(label) {
   let i = 0;
   while (i < label.length) {
+    if (label[i] === '\\') { i += 2; continue; }
     if (label[i] !== '`') { i++; continue; }
     let j = i;
     while (j < label.length && label[j] === '`') j++;
@@ -1255,12 +1258,15 @@ function parseInline(text, refs) {
         buf += ']'; i++;
         continue;
       }
+      // Marked's link label regex only allows backticks as complete code
+      // spans (unequal runs OK) or 2+ right before ']'; otherwise no link.
+      const labelOK = labelBackticksOK(text.slice(br.pos, i));
       let link = null, end = i + 1, labelParsed = false;
-      if (text[i + 1] === '(') {
+      if (labelOK && text[i + 1] === '(') {
         const il = parseInlineLink(text, i + 1);
         if (il) { link = il; end = il.end; }
       }
-      if (!link && text[i + 1] === '[') {
+      if (!link && labelOK && text[i + 1] === '[') {
         const lab = parseLabel(text, i + 1);
         if (lab) {
           labelParsed = true;
@@ -1269,7 +1275,7 @@ function parseInline(text, refs) {
           if (ref) { link = { href: ref.href, title: ref.title }; end = lab.end; }
         }
       }
-      if (!link && !labelParsed) {
+      if (!link && labelOK && !labelParsed) {
         const ref = refs.get(normalizeLabel(text.slice(br.pos, i)));
         if (ref) { link = { href: ref.href, title: ref.title }; end = i + 1; }
       }
