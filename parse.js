@@ -643,7 +643,9 @@ function parseBlocks(src) {
     if (fcode && !allMatched) {
       const failed = stack[depth];
       const prevLine = fcode.lines.length ? fcode.lines[fcode.lines.length - 1] : null;
-      if (failed && failed.t === 'item' && prevLine !== '' && !lblank(l)) {
+      // No content lines yet means the previous line is the fence opener
+      // itself, which starts a fence, so no lazy absorption.
+      if (failed && failed.t === 'item' && prevLine !== null && prevLine !== '' && !lblank(l)) {
         const saveI = l.i, saveC = l.col, saveInd = l.ind;
         const startsBlock = listStart(l, false) || atxLevel(l) || isHR(l) ||
           htmlBlockStart(l) || lpeek(l) === '>';
