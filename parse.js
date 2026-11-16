@@ -930,7 +930,7 @@ let inLinkState = false;
 // hasOpenUnderscore: an unmatched _ opener exists, so a trailing _ run is
 // emphasis (marked tokenizes the emphasis first) and must not truncate an
 // email address.
-function gfmAutolink(text, i, prevCh, hasOpenUnderscore) {
+function gfmAutolink(text, i, prevCh, hasOpenUnderscore, limit) {
   const sub = text.slice(i);
   let m = MAILTO_RE.exec(sub);
   if (m) {
@@ -944,8 +944,7 @@ function gfmAutolink(text, i, prevCh, hasOpenUnderscore) {
     const dm = /^(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/.exec(sub.slice(4));
     if (dm && dm[0] !== '') {
       let raw = 'www.' + dm[0];
-      const lb = raw.search(/\](?=[(\[])/);
-      if (lb >= 0) raw = raw.slice(0, lb);
+      if (limit !== undefined && limit - i < raw.length) raw = raw.slice(0, limit - i);
       const url = backpedal(raw);
       if (url !== 'www.' && url !== '') return { href: 'http://' + url, text: url, end: i + url.length };
     }
@@ -955,8 +954,7 @@ function gfmAutolink(text, i, prevCh, hasOpenUnderscore) {
     const dm = /^(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/.exec(sub.slice(m[0].length));
     if (!dm || dm[0] === '') return null;
     let raw = m[0] + dm[0];
-    const lb = raw.search(/\](?=[(\[])/);
-    if (lb >= 0) raw = raw.slice(0, lb);
+    if (limit !== undefined && limit - i < raw.length) raw = raw.slice(0, limit - i);
     const url = backpedal(raw);
     if (url === m[0] || url === '') return null;
     return { href: url, text: url, end: i + url.length };
@@ -1352,7 +1350,26 @@ function parseInline(text, refs) {
       for (const d of delims) {
         if (d.ch === '_' && d.canOpen && d.alive && !d.done) { hasOpenUnderscore = true; break; }
       }
-      const ga = gfmAutolink(text, i, pc, hasOpenUnderscore);
+      let linkLimit = N;
+      if (brackets.length > 0) {
+        const rb = text.indexOf(']', i);
+        if (rb > 0) {
+          const br = brackets[brackets.length - 1];
+          if (br.active && labelBackticksOK(text.slice(br.pos, rb))) {
+            let formsLink = false;
+            if (text[rb + 1] === '(' && parseInlineLink(text, rb + 1)) formsLink = true;
+            else if (text[rb + 1] === '[') {
+              const lab = parseLabel(text, rb + 1);
+              if (lab) {
+                const key = lab.label === '' ? normalizeLabel(text.slice(br.pos, rb)) : normalizeLabel(lab.label);
+                if (refs.get(key)) formsLink = true;
+              }
+            } else if (refs.get(normalizeLabel(text.slice(br.pos, rb)))) formsLink = true;
+            if (formsLink) linkLimit = rb;
+          }
+        }
+      }
+      const ga = gfmAutolink(text, i, pc, hasOpenUnderscore, linkLimit);
       if (ga) {
         flush();
         append({ t: 'maybe', href: ga.href, text: ga.text });
