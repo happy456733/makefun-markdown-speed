@@ -561,20 +561,38 @@ function parseBlocks(src) {
     if (lblank(l)) {
       // Blank line: absorbed by fenced code / indented code / html 1-5,
       // otherwise structural (closes paragraph, unmatched containers, html 6/7).
-      // Exception: a spaces-only line that is the last line of its
-      // container's content joins an open paragraph (marked's paragraph
-      // regex keeps a trailing whitespace-only line).
-      if (para && allMatched && lrest(l) !== '') {
-        const nx = rawLines[li + 1];
-        let continues = false;
-        if (nx !== undefined) {
-          const nl = makeLine(nx);
-          const nm = matchContainers(nl);
-          continues = nm.depth >= paraDepth;
+      // A tab-containing blank line inside a table paragraph is a table row
+      // (marked's table regex only excludes space-only lines).
+      if (para && lrest(l).includes('\t')) {
+        const pl = para.lines;
+        if (pl.length >= 2) {
+          const aligns = parseDelim(pl[1]);
+          if (aligns && splitCells(pl[0]).length === aligns.length) {
+            para.lines.push(lcontent());
+            paraLastLazy = false;
+            continue;
+          }
         }
-        if (!continues) {
-          // Join the paragraph: fall through to the leaf handling below.
-          // (Skip the blank-line handling entirely.)
+      }
+      // Exception: a spaces-only line joins an open paragraph only when
+      // marked's paragraph regex would keep it: inside a blockquote as the
+      // last line of the quote's content, or as the last input line when
+      // the input has no trailing newline.
+      if (para && allMatched && lrest(l) !== '') {
+        const parent = stack[paraDepth - 1];
+        let join = false;
+        if (parent && parent.t === 'quote') {
+          const nx = rawLines[li + 1];
+          if (nx === undefined) join = true;
+          else {
+            const nl = makeLine(nx);
+            const nm = matchContainers(nl);
+            join = nm.depth < paraDepth;
+          }
+        } else if (isLastLine && !srcEndsNL) {
+          join = true;
+        }
+        if (join) {
           para.lines.push(lcontent());
           paraLastLazy = false;
           continue;
@@ -900,6 +918,10 @@ function backpedal(url) {
   }
   return url.slice(0, i);
 }
+// Document-level flag: true after an inline <a ...> tag until a </a>.
+// Marked keeps this in lexer state for the whole document; while set, no
+// GFM extended autolinks are created.
+let inLinkState = false;
 // Try to match a GFM extended autolink at text[i]. Returns {href, text, end} or null.
 function gfmAutolink(text, i, prevCh) {
   const sub = text.slice(i);
@@ -1234,6 +1256,8 @@ function parseInline(text, refs) {
       const tm = TAG_RE.exec(text.slice(i));
       if (tm) {
         flush();
+        if (!inLinkState && /^<a /i.test(tm[0])) inLinkState = true;
+        else if (inLinkState && /^<\/a>/i.test(tm[0])) inLinkState = false;
         append({ t: 'html', s: tm[0] });
         i += tm[0].length;
         continue;
@@ -1261,8 +1285,8 @@ function parseInline(text, refs) {
     }
     // GFM extended autolinks (deferred: become links unless inside a link).
     const pc = i > 0 ? text[i - 1] : '';
-    if (c === 'w' || c === 'h' || c === 'H' || c === 'f' || c === 'F' || c === 'm' || c === 'x' ||
-        (EMAIL_CHARS.test(c) && (pc === '' || !EMAIL_CHARS.test(pc)))) {
+    if (!inLinkState && (c === 'w' || c === 'h' || c === 'H' || c === 'f' || c === 'F' || c === 'm' || c === 'x' ||
+        (EMAIL_CHARS.test(c) && (pc === '' || !EMAIL_CHARS.test(pc))))) {
       const ga = gfmAutolink(text, i, pc);
       if (ga) {
         flush();
@@ -1437,6 +1461,7 @@ function renderBlock(node, refs, itemLoose) {
   return '';
 }
 export function parse(markdown) {
+  inLinkState = false;
   const src = String(markdown).replace(/\r\n?/g, '\n');
   const { doc, refs } = parseBlocks(src);
   return renderBlock(doc, refs);
