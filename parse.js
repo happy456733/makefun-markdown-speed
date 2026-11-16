@@ -8,7 +8,9 @@ const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;
 // Escape text, leaving valid entity references (&word; &#n; &#x..;) alone.
 const NOENC = /[<>\"']|&(?!(?:#\d{1,7}|#[Xx][0-9a-fA-F]{1,6}|\w+);)/g;
 const FULLENC = /[&<>\"']/g;
+const NEEDESC = /[&<>"']/;
 function esc(s, full) {
+  if (!NEEDESC.test(s)) return s;
   return full ? s.replace(FULLENC, (c) => ESC[c]) : s.replace(NOENC, (c) => ESC[c]);
 }
 // Decode numeric character references (named ones pass through unchanged).
@@ -23,7 +25,10 @@ function decodeNumeric(s) {
   });
 }
 function encodeHref(u) {
-  try { return encodeURI(u).replace(/%25/g, '%'); } catch { return null; }
+  try {
+    const e = encodeURI(u);
+    return e.indexOf('%25') < 0 ? e : e.replace(/%25/g, '%');
+  } catch { return null; }
 }
 function isSpace(c) { return c === ' ' || c === '\t'; }
 function isPunctCode(c) {
