@@ -814,18 +814,43 @@ function parseBlocks(src) {
     // Setext (before HR: a --- line after a paragraph is a heading).
     // Only when the paragraph's container matched this line.
     if (para && depth >= paraDepth) {
-      const sl = setextLevel(l);
+      let sl = setextLevel(l);
       if (sl) {
         const text = stripDefs(para.lines.join('\n'), refs);
         if (text !== '') {
-          para.t = 'head'; para.level = sl; para.text = text.trim();
-          delete para.lines;
-          para = null;
-          continue;
+          // A table paragraph is closed as a table, not a heading
+          // (marked lexes the table first; the setext line is then a
+          // separate paragraph).
+          const tlines = text.split('\n');
+          if (tlines.length >= 2) {
+            const al = parseDelim(tlines[1]);
+            if (al && splitCells(tlines[0]).length === al.length) {
+              if (sl === 1) {
+                // An '=' line is a table body row in marked (the table
+                // regex's body lookahead does not exclude it).
+                para.lines.push(lcontent());
+                paraLastLazy = false;
+                continue;
+              }
+              // A '-' line ends the table (it is an HR / new leaf).
+              closePara();
+              sl = 0;
+            } else {
+              para.t = 'head'; para.level = sl; para.text = text.trim();
+              delete para.lines;
+              para = null;
+              continue;
+            }
+          } else {
+            para.t = 'head'; para.level = sl; para.text = text.trim();
+            delete para.lines;
+            para = null;
+            continue;
+          }
         }
         // Paragraph was only definitions: drop it, reprocess the line.
-        paraParent.children.pop();
-        para = null;
+        // (sl==0 means the table branch already closed the paragraph.)
+        if (sl) { paraParent.children.pop(); para = null; }
       }
     }
     if (isHR(l)) {
