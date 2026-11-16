@@ -835,15 +835,14 @@ function parseBlocks(src) {
       top().children.push(para);
     }
     let line = lcontent();
-    // Lazy continuation lines lose leading whitespace: inside a list item,
-    // up to the item's indent (marked strips it when extracting the item);
-    // inside a quote, 4 columns when 4+ are present (marked lexes such a
-    // line as indented code and merges it into the paragraph).
+    // Lazy continuation lines: marked lexes a lazy line with 4+ columns
+    // of indent as indented code and merges it into the paragraph (so it
+    // loses exactly 4 columns); a lazy line with less indent is kept as-is.
+    // (Same rule inside list items and blockquotes.)
     if (isContinuation && depth < stack.length) {
       const firstUnmatched = stack[depth];
       if (firstUnmatched && firstUnmatched.t === 'item') {
-        const stripped = stripIndentColumns(line, firstUnmatched.indent);
-        line = stripped;
+        if (leadingColumns(line) >= 4) line = stripIndentColumns(line, 4);
       } else if (firstUnmatched && firstUnmatched.t === 'quote') {
         if (leadingColumns(line) >= 4) line = stripIndentColumns(line, 4);
       }
@@ -884,8 +883,8 @@ function flanking(text, i, j) {
   return { leftFlank, rightFlank, prev, next };
 }
 const AUTOLINK_RE = /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s\x00-\x1f<>]*|[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)>/;
-const EMAIL_RE = /^[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![\w-])/;
-const MAILTO_RE = /^(?:mailto:|xmpp:)([A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+)(?:\/[A-Za-z0-9@.]+)?(?![\w-])/;
+const EMAIL_RE = /^[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+/;
+const MAILTO_RE = /^(?:mailto:|xmpp:)([A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+)(?:\/[A-Za-z0-9@.]+)?/;
 const SCHEME_RE = /^(?:https?|ftp):\/\//i;
 const ATTR_RE = /\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/;
 const TAG_RE = new RegExp(
@@ -923,10 +922,19 @@ function backpedal(url) {
 // GFM extended autolinks are created.
 let inLinkState = false;
 // Try to match a GFM extended autolink at text[i]. Returns {href, text, end} or null.
-function gfmAutolink(text, i, prevCh) {
+// hasOpenUnderscore: an unmatched _ opener exists, so a trailing _ run is
+// emphasis (marked tokenizes the emphasis first) and must not truncate an
+// email address.
+function gfmAutolink(text, i, prevCh, hasOpenUnderscore) {
   const sub = text.slice(i);
   let m = MAILTO_RE.exec(sub);
-  if (m) return { href: m[0], text: m[0], end: i + m[0].length };
+  if (m) {
+    const after = sub[m[0].length];
+    if (after === undefined || !/[\w-]/.test(after) || (after === '_' && hasOpenUnderscore)) {
+      return { href: m[0], text: m[0], end: i + m[0].length };
+    }
+    return null;
+  }
   if (sub.startsWith('www.') && (prevCh === '' || /[\s*_~(]/.test(prevCh))) {
     const dm = /^(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/.exec(sub.slice(4));
     if (dm && dm[0] !== '') {
@@ -949,7 +957,13 @@ function gfmAutolink(text, i, prevCh) {
     return { href: url, text: url, end: i + url.length };
   }
   m = EMAIL_RE.exec(sub);
-  if (m) return { href: 'mailto:' + m[0], text: m[0], end: i + m[0].length };
+  if (m) {
+    const after = sub[m[0].length];
+    if (after === undefined || !/[\w-]/.test(after) || (after === '_' && hasOpenUnderscore)) {
+      return { href: 'mailto:' + m[0], text: m[0], end: i + m[0].length };
+    }
+    return null;
+  }
   return null;
 }
 // Parse an inline link destination/title starting at text[i] == '('.
@@ -1287,7 +1301,11 @@ function parseInline(text, refs) {
     const pc = i > 0 ? text[i - 1] : '';
     if (!inLinkState && (c === 'w' || c === 'h' || c === 'H' || c === 'f' || c === 'F' || c === 'm' || c === 'x' ||
         (EMAIL_CHARS.test(c) && (pc === '' || !EMAIL_CHARS.test(pc))))) {
-      const ga = gfmAutolink(text, i, pc);
+      let hasOpenUnderscore = false;
+      for (const d of delims) {
+        if (d.ch === '_' && d.canOpen && d.alive && !d.done) { hasOpenUnderscore = true; break; }
+      }
+      const ga = gfmAutolink(text, i, pc, hasOpenUnderscore);
       if (ga) {
         flush();
         append({ t: 'maybe', href: ga.href, text: ga.text });
