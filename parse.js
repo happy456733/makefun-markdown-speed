@@ -1144,9 +1144,20 @@ function rdelimGroup(ch, prev, next) {
   if (ch === '*' && prevA && nextA) return 6;
   return 0;
 }
+// Marked's emphasis masking (#n): code spans, links and tags are replaced
+// with [aaa...a] before the emphasis scan, so delimiters inside them (or
+// inside a code span that spans a link boundary) cannot be closers.
+const MASK_PUNCT_RE = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\p{P}\p{S}])/gu;
+const MASK_BLOCKSKIP_RE = /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)|(?<!`)()(?<b>`+)[^`]+\k<b>(?!`)|<(?! )[^<>]*?>/g;
+function computeMasked(t) {
+  t = t.replace(MASK_PUNCT_RE, (n, s, r) => r ? '+'.repeat(n.length) : s ? s + n.slice(s.length, -s.length).replace(/`/g, '+') + s : n);
+  t = t.replace(MASK_BLOCKSKIP_RE, (n) => '[' + 'a'.repeat(n.length - 2) + ']');
+  return t;
+}
 function parseInline(text, refs) {
   let head = null, tail = null;
   const delims = [];
+  const maskedPara = computeMasked(text);
   const brackets = [];
   let buf = '';
   function append(node) {
@@ -1206,17 +1217,21 @@ function parseInline(text, refs) {
   // and f (delims skipped by the odd-match rule); a closer forms emphasis
   // when m reaches 0. Phase 2 builds the nodes innermost-first so nesting
   // comes out right. '~' keeps the equal-run rule (marked's separate del).
-  function processEmphasis(lo, hi) {
+  function processEmphasis(lo, hi, masked, base) {
     const pairs = [];
     const remaining = new Map();
+    const isMasked = (d) => {
+      const p = d.pos - base;
+      return p >= 0 && p < masked.length && masked[p] !== text[d.pos];
+    };
     const rem = (idx) => remaining.has(idx) ? remaining.get(idx) : delims[idx].num;
     // '~' pairs: closer-driven, equal runs of 1-2.
     for (let cur = lo; cur < hi; cur++) {
       const d = delims[cur];
-      if (d.ch !== '~' || !d.alive || d.done || !d.canClose) continue;
+      if (d.ch !== '~' || !d.alive || d.done || !d.canClose || isMasked(d)) continue;
       for (let op = cur - 1; op >= lo; op--) {
         const o = delims[op];
-        if (o.ch !== '~' || !o.alive || o.done || !o.canOpen) continue;
+        if (o.ch !== '~' || !o.alive || o.done || !o.canOpen || isMasked(o)) continue;
         if (rem(op) === rem(cur) && rem(cur) >= 1 && rem(cur) <= 2) {
           pairs.push([op, cur, rem(cur), rem(cur)]);
           remaining.set(op, 0);
@@ -1228,7 +1243,7 @@ function parseInline(text, refs) {
     // '*' and '_' pairs: opener-driven.
     for (let oi = lo; oi < hi; oi++) {
       const o = delims[oi];
-      if (o.ch === '~' || !o.alive || o.done || !o.canOpen) continue;
+      if (o.ch === '~' || !o.alive || o.done || !o.canOpen || isMasked(o)) continue;
       // y is the full run length (marked's y counts the literal delims
       // before the retry position too).
       const y = rem(oi);
@@ -1253,7 +1268,7 @@ function parseInline(text, refs) {
         let seenSame = false;
         while (ci < scanHi) {
           const d = delims[ci];
-          if (d.alive && !d.done && d.ch === o.ch) {
+          if (d.alive && !d.done && d.ch === o.ch && !isMasked(d)) {
             // Marked's RDelim regex skips the FIRST same-char delimiter when
             // it sits inside a double-delimiter span of the other char
             // (__...*...__ for '*', **..._...** for '_').
@@ -1424,7 +1439,7 @@ function parseInline(text, refs) {
         canClose = rightFlank && (!leftFlank || isFlankPunct(next));
       }
       flush();
-      const node = append({ t: 'delim', ch: c, num, canOpen, canClose, alive: true, done: false, grp: rdelimGroup(c, prev, next) });
+      const node = append({ t: 'delim', ch: c, num, canOpen, canClose, alive: true, done: false, grp: rdelimGroup(c, prev, next), pos: i });
       delims.push(node);
       i = j;
       continue;
@@ -1477,7 +1492,7 @@ function parseInline(text, refs) {
         continue;
       }
       flush();
-      processEmphasis(br.delimStart, delims.length);
+      processEmphasis(br.delimStart, delims.length, computeMasked(text.slice(br.pos, i)), br.pos);
       for (let k = br.delimStart; k < delims.length; k++) delims[k].done = true;
       const children = [];
       let n = br.node.next;
@@ -1581,7 +1596,7 @@ function parseInline(text, refs) {
     i++;
   }
   flush();
-  processEmphasis(0, delims.length);
+  processEmphasis(0, delims.length, maskedPara, 0);
   // Collect the top-level list, resolve leftovers.
   const nodes = [];
   let n = head;
