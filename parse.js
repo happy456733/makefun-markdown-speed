@@ -1066,6 +1066,24 @@ function labelBackticksOK(label) {
   }
   return true;
 }
+// Which alternative of marked's emStrong RDelim regex a delimiter run
+// matches (1-6), or 0 if none. Groups 3/4 are openers, 1/2 closers without
+// the odd-match rule, 5/6 closers with it. '_' has no group 6 (intra-word).
+function rdelimGroup(ch, prev, next) {
+  const prevWS = prev !== '' && /\s/.test(prev);
+  const nextWS = next === '' || /\s/.test(next);
+  const prevP = isFlankPunct(prev);
+  const nextP = next !== '' && isFlankPunct(next);
+  const prevA = prev !== '' && !prevWS && !prevP;
+  const nextA = next !== '' && !/\s/.test(next) && !nextP;
+  if (prevP && nextWS) return 1;
+  if (prevA && (nextP || nextWS)) return 2;
+  if ((prevP || prevWS) && nextA) return 3;
+  if (prevWS && nextP) return 4;
+  if (prevP && nextP) return 5;
+  if (ch === '*' && prevA && nextA) return 6;
+  return 0;
+}
 function parseInline(text, refs) {
   let head = null, tail = null;
   const delims = [];
@@ -1117,31 +1135,121 @@ function parseInline(text, refs) {
       d.alive = false;
     }
   }
+  // Emphasis, following marked's opener-driven emStrong (not the spec's
+  // closer-driven algorithm). Phase 1 matches pairs: for each opener, scan
+  // forward tracking m (remaining opener delims, raised by nested openers)
+  // and f (delims skipped by the odd-match rule); a closer forms emphasis
+  // when m reaches 0. Phase 2 builds the nodes innermost-first so nesting
+  // comes out right. '~' keeps the equal-run rule (marked's separate del).
   function processEmphasis(lo, hi) {
-    let cur = lo;
-    while (cur < hi) {
+    const pairs = [];
+    const remaining = new Map();
+    const rem = (idx) => remaining.has(idx) ? remaining.get(idx) : delims[idx].num;
+    // '~' pairs: closer-driven, equal runs of 1-2.
+    for (let cur = lo; cur < hi; cur++) {
       const d = delims[cur];
-      if (!d.alive || d.done || !d.canClose) { cur++; continue; }
-      let op = cur - 1, found = -1;
-      while (op >= lo) {
+      if (d.ch !== '~' || !d.alive || d.done || !d.canClose) continue;
+      for (let op = cur - 1; op >= lo; op--) {
         const o = delims[op];
-        if (o.alive && !o.done && o.ch === d.ch && o.canOpen) {
-          if (d.ch === '~') {
-            if (o.num === d.num) { found = op; break; }
-          } else {
-            const sum3 = (o.num + d.num) % 3 === 0;
-            const both3 = (o.num % 3 === 0) && (d.num % 3 === 0);
-            const odd = (o.canClose || d.canOpen) && sum3 && !both3;
-            if (!odd) { found = op; break; }
-          }
+        if (o.ch !== '~' || !o.alive || o.done || !o.canOpen) continue;
+        if (rem(op) === rem(cur) && rem(cur) >= 1 && rem(cur) <= 2) {
+          pairs.push([op, cur, rem(cur)]);
+          remaining.set(op, 0);
+          remaining.set(cur, 0);
+          break;
         }
-        op--;
       }
-      if (found < 0) { cur++; continue; }
-      const o = delims[found];
-      const use = d.ch === '~' ? d.num : (o.num >= 2 && d.num >= 2 ? 2 : 1);
+    }
+    // '*' and '_' pairs: opener-driven.
+    for (let oi = lo; oi < hi; oi++) {
+      const o = delims[oi];
+      if (o.ch === '~' || !o.alive || o.done || !o.canOpen) continue;
+      // y is the full run length (marked's y counts the literal delims
+      // before the retry position too).
+      const y = rem(oi);
+      // An opener inside an already-formed pair can only match a closer
+      // inside that same pair (marked tokenizes the pair's text
+      // recursively); a closer outside would cross the pair.
+      let scanHi = hi;
+      for (const [a, b] of pairs) {
+        if (a < oi && oi < b && b + 1 < scanHi) scanHi = b + 1;
+      }
+      while (rem(oi) > 0) {
+        const k = rem(oi);
+        let m = k, f = 0;
+        let ci = oi + 1, matched = -1, matchedB = 0;
+        let seenSame = false;
+        while (ci < scanHi) {
+          const d = delims[ci];
+          if (d.alive && !d.done && d.ch === o.ch) {
+            // Marked's RDelim regex skips the FIRST same-char delimiter when
+            // it sits inside a double-delimiter span of the other char
+            // (__...*...__ for '*', **..._...** for '_').
+            if (!seenSame && d.num === 1) {
+              seenSame = true;
+              // The skip pattern is ^[^_*]*?<other><other>[^_*]*?<ch>[^_*]*?
+              // (?=<other><other>): the skipped delim is a run of exactly 1,
+              // the span opener a run of exactly 2 (the only delimiter
+              // between the opener and it), the span closer the next
+              // delimiter after it (a run of 2+).
+              const other = o.ch === '*' ? '_' : '*';
+              let between = 0, spanOpen = -1;
+              for (let q = oi + 1; q < ci; q++) {
+                const x = delims[q];
+                if (!x.alive || x.done || (x.ch !== '*' && x.ch !== '_')) continue;
+                between++;
+                if (x.ch === other && x.num === 2) spanOpen = q;
+              }
+              let spanClose = -1;
+              if (between === 1 && spanOpen >= 0) {
+                for (let q = ci + 1; q < hi; q++) {
+                  const x = delims[q];
+                  if (!x.alive || x.done || (x.ch !== '*' && x.ch !== '_')) continue;
+                  if (x.ch === other && x.num >= 2) spanClose = q;
+                  break;
+                }
+              }
+              if (spanClose >= 0) { ci++; continue; }
+            } else if (!seenSame) seenSame = true;
+            const b = rem(ci);
+            if (b > 0) {
+              const g = d.grp;
+              if (g === 3 || g === 4) m += b;
+              else if (g === 5 || g === 6) {
+                if (y % 3 !== 0 && (y + b) % 3 === 0) f += b;
+                else { m -= b; if (m <= 0) { matched = ci; matchedB = b; break; } }
+              } else if (g === 1 || g === 2) {
+                m -= b;
+                if (m <= 0) { matched = ci; matchedB = b; break; }
+              }
+            }
+          }
+          ci++;
+        }
+        if (matched < 0) {
+          // Marked advances one char (the first delim becomes literal text)
+          // and retries emStrong at the next delim of the run.
+          remaining.set(oi, rem(oi) - 1);
+          continue;
+        }
+        const b = Math.min(matchedB, matchedB + m + f);
+        const useMin = Math.min(k, b);
+        const use = useMin % 2 === 1 ? 1 : 2;
+        const finalUse = Math.min(use, k, rem(matched));
+        if (finalUse < 1) break;
+        pairs.push([oi, matched, finalUse]);
+        remaining.set(oi, rem(oi) - finalUse);
+        remaining.set(matched, rem(matched) - finalUse);
+      }
+    }
+    // Build innermost first (shortest span); for the same span, the
+    // larger use first (a strong inside an em sharing opener/closer).
+    pairs.sort((a, b) => (a[1] - a[0]) - (b[1] - b[0]) || b[2] - a[2]);
+    for (const [oi, ci, use] of pairs) {
+      const o = delims[oi], d = delims[ci];
+      if (!o.alive || !d.alive) continue;
+      if (o.num < use || d.num < use) continue;
       useDelims(o, d, use);
-      if (!d.alive) cur++;
     }
   }
   let i = 0;
@@ -1224,16 +1332,14 @@ function parseInline(text, refs) {
       while (j < N && text[j] === c) j++;
       const num = j - i;
       if (c === '~' && num >= 3) { buf += text.slice(i, j); i = j; continue; }
-      const { leftFlank, rightFlank } = flanking(text, i, j);
+      const { leftFlank, rightFlank, prev, next } = flanking(text, i, j);
       let canOpen = leftFlank, canClose = rightFlank;
       if (c === '_') {
-        const prev = i > 0 ? text[i - 1] : '';
-        const next = j < N ? text[j] : '';
         canOpen = leftFlank && (!rightFlank || isFlankPunct(prev));
         canClose = rightFlank && (!leftFlank || isFlankPunct(next));
       }
       flush();
-      const node = append({ t: 'delim', ch: c, num, canOpen, canClose, alive: true, done: false });
+      const node = append({ t: 'delim', ch: c, num, canOpen, canClose, alive: true, done: false, grp: rdelimGroup(c, prev, next) });
       delims.push(node);
       i = j;
       continue;
