@@ -489,7 +489,10 @@ function parseBlocks(src) {
       // gets no trailing newline (its container content ends there).
       // At EOF li is past the last line, so neither flag is set.
       if (li < rawLines.length && depth >= html.htmlDepth) {
-        if (/^[ \t]*$/.test(rawLines[li])) html.followedByBlank = true;
+        // Types 1-5: marked's html regex (\n+) only spans truly empty
+        // lines, so a spaces/tabs-only line does NOT strip the trailing \n.
+        const blank = html.type <= 5 ? rawLines[li] === '' : /^[ \t]*$/.test(rawLines[li]);
+        if (blank) html.followedByBlank = true;
         else html.followedByNonBlank = true;
       }
       html = null;
@@ -670,7 +673,7 @@ function parseBlocks(src) {
         if (html.type <= 5) {
           const nx = rawLines[li + 1];
           if (nx !== undefined) {
-            if (/^[ \t]*$/.test(nx)) html.followedByBlank = true;
+            if (nx === '') html.followedByBlank = true;
             else html.followedByNonBlank = true;
           }
         }
@@ -784,7 +787,7 @@ function parseBlocks(src) {
       else if (hb.type <= 5) {
         const nx = rawLines[li + 1];
         if (nx === undefined) { /* EOF: endsAtEOF decides */ }
-        else if (/^[ \t]*$/.test(nx)) node.followedByBlank = true;
+        else if (nx === '') node.followedByBlank = true;
         else node.followedByNonBlank = true;
       }
       continue;
