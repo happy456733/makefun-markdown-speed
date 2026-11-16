@@ -1003,12 +1003,12 @@ let inLinkState = false;
 // email address.
 const WORDCHAR = /[\w-]/;
 const WWWPREV = /[\s*_~(]/;
-function gfmAutolink(text, i, prevCh, hasOpenUnderscore, limit) {
+function gfmAutolink(text, i, prevCh, hasOpenUnderscoreFn, limit) {
   MAILTO_RE.lastIndex = i;
   let m = MAILTO_RE.exec(text);
   if (m) {
     const after = text[i + m[0].length];
-    if (after === undefined || !WORDCHAR.test(after) || (after === '_' && hasOpenUnderscore)) {
+    if (after === undefined || !WORDCHAR.test(after) || (after === '_' && hasOpenUnderscoreFn())) {
       return { href: m[0], text: m[0], end: i + m[0].length };
     }
     return null;
@@ -1039,7 +1039,7 @@ function gfmAutolink(text, i, prevCh, hasOpenUnderscore, limit) {
   m = EMAIL_RE.exec(text);
   if (m) {
     const after = text[i + m[0].length];
-    if (after === undefined || !WORDCHAR.test(after) || (after === '_' && hasOpenUnderscore)) {
+    if (after === undefined || !WORDCHAR.test(after) || (after === '_' && hasOpenUnderscoreFn())) {
       return { href: 'mailto:' + m[0], text: m[0], end: i + m[0].length };
     }
     return null;
@@ -1583,10 +1583,12 @@ function parseInline(text, refs) {
     const pc = i > 0 ? text[i - 1] : '';
     if (!inLinkState && (c === 'w' || c === 'h' || c === 'H' || c === 'f' || c === 'F' || c === 'm' || c === 'x' ||
         (EMAIL_CHARS.test(c) && (pc === '' || !EMAIL_CHARS.test(pc))))) {
-      let hasOpenUnderscore = false;
-      for (const d of delims) {
-        if (d.ch === '_' && d.canOpen && d.alive && !d.done) { hasOpenUnderscore = true; break; }
-      }
+      const hasOpenUnderscoreFn = () => {
+        for (const d of delims) {
+          if (d.ch === '_' && d.canOpen && d.alive && !d.done) return true;
+        }
+        return false;
+      };
       let linkLimit = N;
       if (brackets.length > 0) {
         const rb = text.indexOf(']', i);
@@ -1606,7 +1608,7 @@ function parseInline(text, refs) {
           }
         }
       }
-      const ga = gfmAutolink(text, i, pc, hasOpenUnderscore, linkLimit);
+      const ga = gfmAutolink(text, i, pc, hasOpenUnderscoreFn, linkLimit);
       if (ga) {
         flush();
         append({ t: 'maybe', href: ga.href, text: ga.text });
