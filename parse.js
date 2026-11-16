@@ -1148,9 +1148,13 @@ function parseInline(text, refs) {
       else if (n.t === 'em' || n.t === 'strong' || n.t === 'del') finalizeLinkChildren(n.children);
     }
   }
-  function useDelims(o, d, use) {
+  function useDelims(o, d, use, b) {
     o.num -= use;
-    d.num -= use;
+    // b closer delims are inside marked's raw match M; `use` of them are
+    // the closing marker, the other (b - use) are literal text at the end
+    // of the emphasis content. Delims beyond b stay outside.
+    const inside = b - use;
+    d.num -= b;
     const type = o.ch === '~' ? 'del' : (use === 2 ? 'strong' : 'em');
     const children = [];
     let n = o.next;
@@ -1159,6 +1163,7 @@ function parseInline(text, refs) {
       if (n.t === 'delim') n.done = true;
       children.push(n); n.prev = n.next = null; n = nx;
     }
+    if (inside > 0) children.push({ t: 'text', s: d.ch.repeat(inside) });
     const em = { t: type, children, prev: null, next: null };
     if (o.num === 0) {
       em.prev = o.prev; em.next = d;
@@ -1195,7 +1200,7 @@ function parseInline(text, refs) {
         const o = delims[op];
         if (o.ch !== '~' || !o.alive || o.done || !o.canOpen) continue;
         if (rem(op) === rem(cur) && rem(cur) >= 1 && rem(cur) <= 2) {
-          pairs.push([op, cur, rem(cur)]);
+          pairs.push([op, cur, rem(cur), rem(cur)]);
           remaining.set(op, 0);
           remaining.set(cur, 0);
           break;
@@ -1216,8 +1221,15 @@ function parseInline(text, refs) {
       for (const [a, b] of pairs) {
         if (a < oi && oi < b && b + 1 < scanHi) scanHi = b + 1;
       }
+      let formedPair = false;
       while (rem(oi) > 0) {
         const k = rem(oi);
+        // Marked's `o` flag: the opener is preceded by the same delimiter
+        // char. True on a retry after a FAILED scan (same text, mid-run).
+        // False after a pair formed: the retry simulates marked's
+        // recursive tokenization of the pair's text, where the opener
+        // is at the start of that text.
+        const isRetry = k < o.num && !formedPair;
         let m = k, f = 0;
         let ci = oi + 1, matched = -1, matchedB = 0;
         let seenSame = false;
@@ -1258,6 +1270,7 @@ function parseInline(text, refs) {
               const g = d.grp;
               if (g === 3 || g === 4) m += b;
               else if (g === 5 || g === 6) {
+                if (isRetry) { ci = scanHi; break; }
                 if (y % 3 !== 0 && (y + b) % 3 === 0) f += b;
                 else { m -= b; if (m <= 0) { matched = ci; matchedB = b; break; } }
               } else if (g === 1 || g === 2) {
@@ -1279,19 +1292,31 @@ function parseInline(text, refs) {
         const use = useMin % 2 === 1 ? 1 : 2;
         const finalUse = Math.min(use, k, rem(matched));
         if (finalUse < 1) break;
-        pairs.push([oi, matched, finalUse]);
+        pairs.push([oi, matched, finalUse, b]);
+        formedPair = true;
         remaining.set(oi, rem(oi) - finalUse);
+        // Only `use` delims are consumed from the closer's remaining
+        // count: the (b - use) inside delims stay available for the
+        // same opener's retry / inner openers (marked's recursive
+        // tokenization of the pair's text). useDelims accounts for
+        // the full b when building.
         remaining.set(matched, rem(matched) - finalUse);
       }
     }
     // Build innermost first (shortest span); for the same span, the
     // larger use first (a strong inside an em sharing opener/closer).
     pairs.sort((a, b) => (a[1] - a[0]) - (b[1] - b[0]) || b[2] - a[2]);
-    for (const [oi, ci, use] of pairs) {
+    // A closer shared by several pairs (e.g. ***...*** nesting) keeps
+    // the old behaviour: each pair takes only `use` delims, the rest
+    // stay outside. The b-inside rule applies only to an unshared closer.
+    const closerCount = new Map();
+    for (const [, ci] of pairs) closerCount.set(ci, (closerCount.get(ci) || 0) + 1);
+    for (const [oi, ci, use, b] of pairs) {
       const o = delims[oi], d = delims[ci];
       if (!o.alive || !d.alive) continue;
       if (o.num < use || d.num < use) continue;
-      useDelims(o, d, use);
+      const shared = (closerCount.get(ci) || 0) > 1;
+      useDelims(o, d, use, shared ? use : Math.min(b, d.num));
     }
   }
   let i = 0;
