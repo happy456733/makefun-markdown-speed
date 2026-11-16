@@ -1154,10 +1154,18 @@ function computeMasked(t) {
   t = t.replace(MASK_BLOCKSKIP_RE, (n) => '[' + 'a'.repeat(n.length - 2) + ']');
   return t;
 }
+// Fast path: text with no inline markup at all.
+const PLAIN_RE = /[\\`\[\]!*_~<]|www\.|https?:\/\/|ftp:\/\/|[A-Za-z0-9._%+-]+@|[ \t]{2,}\n/i;
 function parseInline(text, refs) {
+  if (!PLAIN_RE.test(text)) return [{ t: 'text', s: text }];
   let head = null, tail = null;
   const delims = [];
-  const maskedPara = computeMasked(text);
+  // Masking only matters when emphasis delimiters exist AND there is
+  // something to mask (a backtick, bracket or tag); otherwise the
+  // masked text is identical to the original.
+  const hasDelim = text.includes('*') || text.includes('_') || text.includes('~');
+  const maskable = text.includes('`') || text.includes('[') || text.includes('<');
+  const maskedPara = (hasDelim && maskable) ? computeMasked(text) : text;
   const brackets = [];
   let buf = '';
   function append(node) {
@@ -1492,7 +1500,9 @@ function parseInline(text, refs) {
         continue;
       }
       flush();
-      processEmphasis(br.delimStart, delims.length, computeMasked(text.slice(br.pos, i)), br.pos);
+      const linkText = text.slice(br.pos, i);
+      const linkMasked = (linkText.includes('*') || linkText.includes('_') || linkText.includes('~')) ? computeMasked(linkText) : linkText;
+      processEmphasis(br.delimStart, delims.length, linkMasked, br.pos);
       for (let k = br.delimStart; k < delims.length; k++) delims[k].done = true;
       const children = [];
       let n = br.node.next;
