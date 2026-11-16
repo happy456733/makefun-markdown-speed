@@ -1169,8 +1169,12 @@ function rdelimGroup(ch, prev, next) {
 const MASK_PUNCT_RE = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\p{P}\p{S}])/gu;
 const MASK_BLOCKSKIP_RE = /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)|(?<!`)()(?<b>`+)[^`]+\k<b>(?!`)|<(?! )[^<>]*?>/g;
 function computeMasked(t) {
-  t = t.replace(MASK_PUNCT_RE, (n, s, r) => r ? '+'.repeat(n.length) : s ? s + n.slice(s.length, -s.length).replace(/`/g, '+') + s : n);
-  t = t.replace(MASK_BLOCKSKIP_RE, (n) => '[' + 'a'.repeat(n.length - 2) + ']');
+  if (t.includes('`') || t.includes('\\')) {
+    t = t.replace(MASK_PUNCT_RE, (n, s, r) => r ? '+'.repeat(n.length) : s ? s + n.slice(s.length, -s.length).replace(/`/g, '+') + s : n);
+  }
+  if (t.includes('[') || t.includes('`') || t.includes('<')) {
+    t = t.replace(MASK_BLOCKSKIP_RE, (n) => '[' + 'a'.repeat(n.length - 2) + ']');
+  }
   return t;
 }
 // Fast path: text with no inline markup at all.
@@ -1520,7 +1524,7 @@ function parseInline(text, refs) {
       }
       flush();
       const linkText = text.slice(br.pos, i);
-      const linkMasked = (linkText.includes('*') || linkText.includes('_') || linkText.includes('~')) ? computeMasked(linkText) : linkText;
+      const linkMasked = ((linkText.includes('*') || linkText.includes('_') || linkText.includes('~')) && (linkText.includes('`') || linkText.includes('[') || linkText.includes('<'))) ? computeMasked(linkText) : linkText;
       processEmphasis(br.delimStart, delims.length, linkMasked, br.pos);
       for (let k = br.delimStart; k < delims.length; k++) delims[k].done = true;
       const children = [];
