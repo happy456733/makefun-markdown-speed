@@ -61,14 +61,18 @@ function stripIndentColumns(s, n) {
 }
 
 // ---- line cursor: tracks position in a line with tab-stop awareness ----
-function makeLine(s) { return { s, i: 0, col: 0, ind: 0 }; }
+function makeLine(s) { return { s, i: 0, col: 0, ind: 0, qb: 0 }; }
 function lpeek(l) { return l.ind > 0 ? ' ' : (l.i < l.s.length ? l.s[l.i] : '\n'); }
 function lrest(l) { return l.ind > 0 ? ' '.repeat(l.ind) + l.s.slice(l.i + 1) : l.s.slice(l.i); }
 // Remainder with tabs in the LEADING whitespace expanded to spaces, using
 // the current column as the base (marked expands leading-whitespace tabs
 // when extracting list item / blockquote content).
 function lrestExpanded(l) {
-  let col = l.col, i = l.i, out = '';
+  // Tab expansion uses the column in the innermost quote's content string
+  // (which still holds its '>' marker), i.e. the raw column minus the raw
+  // column where that marker starts (l.qb). With no quote, qb is 0 and the
+  // raw column is used (marked's list tokenizer expands from the raw line).
+  let col = l.col - l.qb, i = l.i, out = '';
   if (l.ind > 0) { out += ' '.repeat(l.ind); col += l.ind; i++; }
   while (i < l.s.length) {
     const c = l.s[i];
@@ -528,6 +532,7 @@ function parseBlocks(src) {
         const sI = l.i, sC = l.col, sInd = l.ind;
         lskipWS(l, 3);
         if (lpeek(l) !== '>') { l.i = sI; l.col = sC; l.ind = sInd; allMatched = false; break; }
+        l.qb = l.col; // raw column of this (innermost-matched) '>' marker
         lnext(l);
         if (lpeek(l) === ' ' || lpeek(l) === '\t') lskipWS(l, 1);
         depth = i + 1;
