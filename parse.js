@@ -64,6 +64,20 @@ function stripIndentColumns(s, n) {
 function makeLine(s) { return { s, i: 0, col: 0, ind: 0 }; }
 function lpeek(l) { return l.ind > 0 ? ' ' : (l.i < l.s.length ? l.s[l.i] : '\n'); }
 function lrest(l) { return l.ind > 0 ? ' '.repeat(l.ind) + l.s.slice(l.i + 1) : l.s.slice(l.i); }
+// Remainder with tabs in the LEADING whitespace expanded to spaces, using
+// the current column as the base (marked expands leading-whitespace tabs
+// when extracting list item / blockquote content).
+function lrestExpanded(l) {
+  let col = l.col, i = l.i, out = '';
+  if (l.ind > 0) { out += ' '.repeat(l.ind); col += l.ind; i++; }
+  while (i < l.s.length) {
+    const c = l.s[i];
+    if (c === ' ') { out += ' '; col++; i++; }
+    else if (c === '\t') { const t = 4 - (col % 4); out += ' '.repeat(t); col += t; i++; }
+    else break;
+  }
+  return out + l.s.slice(i);
+}
 // Consume up to n columns of whitespace (spaces/tabs). Returns columns consumed.
 function lskipWS(l, n) {
   let left = n, got = 0;
@@ -204,7 +218,7 @@ function htmlBlockStart(l) {
 }
 // List item start. Returns {ordered, start, delim, marker, indent} or null.
 // indent = content indent in columns from the container's content start.
-function listStart(l, paraOpen) {
+function listStart(l, paraOpen, paraInList) {
   const saveI = l.i, saveC = l.col, saveInd = l.ind;
   const lead = lskipWS(l, 3);
   const c = lpeek(l);
@@ -241,7 +255,10 @@ function listStart(l, paraOpen) {
     if (paraOpen) { l.i = saveI; l.col = saveC; l.ind = saveInd; return null; }
     return { ordered, start, delim, marker: c, indent: lead + markerLen + 1, empty: true };
   }
-  if (paraOpen && ordered && start !== 1) { l.i = saveI; l.col = saveC; l.ind = saveInd; return null; }
+  // An ordered list starting != 1 cannot interrupt a paragraph, EXCEPT
+  // inside a list item (marked lexes item content without the paragraph
+  // tokenizer, so any number interrupts there).
+  if (paraOpen && !paraInList && ordered && start !== 1) { l.i = saveI; l.col = saveC; l.ind = saveInd; return null; }
   if (spaces >= 5) {
     // 5+ spaces: content indent is marker width + 1; rewind to 1 space in.
     l.i = mI; l.col = mC; l.ind = mInd;
@@ -533,6 +550,13 @@ function parseBlocks(src) {
     const l = makeLine(raw);
     // Phase 1: match open containers.
     ({ depth, allMatched } = matchContainers(l));
+    // Inside a list item or blockquote, marked expands tabs in the leading
+    // whitespace of each line when extracting the container's content.
+    let expandTabs = false;
+    for (let k = 1; k < depth; k++) {
+      if (stack[k].t === 'item' || stack[k].t === 'quote') { expandTabs = true; break; }
+    }
+    const lcontent = () => expandTabs ? lrestExpanded(l) : lrest(l);
 
     if (lblank(l)) {
       // Blank line: absorbed by fenced code / indented code / html 1-5,
@@ -551,14 +575,14 @@ function parseBlocks(src) {
         if (!continues) {
           // Join the paragraph: fall through to the leaf handling below.
           // (Skip the blank-line handling entirely.)
-          para.lines.push(lrest(l));
+          para.lines.push(lcontent());
           paraLastLazy = false;
           continue;
         }
       }
-      if (allMatched && fcode) { lskipWS(l, fcode.indent); fcode.lines.push(lrest(l)); continue; }
-      if (allMatched && icode) { lskipWS(l, 4); pendingBlanks.push(lrest(l)); continue; }
-      if (allMatched && html && html.type <= 5) { html.lines.push(lrest(l)); html.endsAtEOF = isLastLine && srcEndsNL; continue; }
+      if (allMatched && fcode) { lskipWS(l, fcode.indent); fcode.lines.push(lcontent()); continue; }
+      if (allMatched && icode) { lskipWS(l, 4); pendingBlanks.push(lcontent()); continue; }
+      if (allMatched && html && html.type <= 5) { html.lines.push(lcontent()); html.endsAtEOF = isLastLine && srcEndsNL; continue; }
       if (allMatched && html && html.type >= 6) { html.followedByBlank = true; html = null; }
       closeLeaf();
       closeTo(depth);
@@ -583,21 +607,40 @@ function parseBlocks(src) {
     // Open leaf continuations (only when all containers matched).
     if (fcode && allMatched) {
       if (fenceClose(l, fcode.ch, fcode.len)) { fcode = null; }
-      else { lskipWS(l, fcode.indent); fcode.lines.push(lrest(l)); }
+      else { lskipWS(l, fcode.indent); fcode.lines.push(lcontent()); }
       continue;
+    }
+    // Fenced code inside a list item absorbs under-indented lines as lazy
+    // continuations (marked's list tokenizer keeps them in the item text),
+    // unless the previous fence line was blank or the line starts a new
+    // block that ends the item.
+    if (fcode && !allMatched) {
+      const failed = stack[depth];
+      const prevLine = fcode.lines.length ? fcode.lines[fcode.lines.length - 1] : null;
+      if (failed && failed.t === 'item' && prevLine !== '' && !lblank(l)) {
+        const saveI = l.i, saveC = l.col, saveInd = l.ind;
+        const startsBlock = listStart(l, false) || atxLevel(l) || isHR(l) ||
+          htmlBlockStart(l) || lpeek(l) === '>';
+        l.i = saveI; l.col = saveC; l.ind = saveInd;
+        if (!startsBlock) {
+          if (fenceClose(l, fcode.ch, fcode.len)) { fcode = null; }
+          else { lskipWS(l, fcode.indent); fcode.lines.push(lcontent()); }
+          continue;
+        }
+      }
     }
     if (icode && allMatched) {
       if (lindent(l) >= 4) {
         for (const b of pendingBlanks) icode.lines.push(b);
         pendingBlanks = [];
         lskipWS(l, 4);
-        icode.lines.push(lrest(l));
+        icode.lines.push(lcontent());
         continue;
       }
       icode = null; pendingBlanks = [];
     }
     if (html && allMatched) {
-      const rest = lrest(l);
+      const rest = lcontent();
       html.lines.push(rest);
       html.endsAtEOF = isLastLine && srcEndsNL;
       if (html.end && htmlEnds(rest, html)) {
@@ -623,6 +666,8 @@ function parseBlocks(src) {
         if (lpeek(l) === ' ' || lpeek(l) === '\t') lskipWS(l, 1);
         if (!started) { closeTo(depth); started = true; }
         closePara();
+        // A blockquote cannot be a child of a list: close any trailing list.
+        while (top().t === 'list') stack.pop();
         noteBlockStart(top());
         const q = { t: 'quote', children: [] };
         top().children.push(q);
@@ -636,7 +681,13 @@ function parseBlocks(src) {
       // in the SAME container; if the paragraph's container did not match
       // this line, the paragraph is already over and the item may start.
       const interruptsPara = para !== null && paraDepth <= depth;
-      const li = listStart(l, interruptsPara);
+      let paraInList = false;
+      if (interruptsPara) {
+        for (let k = 1; k < paraDepth; k++) {
+          if (stack[k].t === 'item') { paraInList = true; break; }
+        }
+      }
+      const li = listStart(l, interruptsPara, paraInList);
       if (li) {
         if (!started) { closeTo(depth); started = true; }
         closePara();
@@ -704,7 +755,7 @@ function parseBlocks(src) {
       if (!started) { closeForLeaf(depth); started = true; }
       closePara();
       noteBlockStart(top());
-      const node = { t: 'html', type: hb.type, end: hb.end, lines: [lrest(l)], endsAtEOF: isLastLine && srcEndsNL, followedByBlank: false, followedByNonBlank: false, htmlDepth: stack.length };
+      const node = { t: 'html', type: hb.type, end: hb.end, lines: [lcontent()], endsAtEOF: isLastLine && srcEndsNL, followedByBlank: false, followedByNonBlank: false, htmlDepth: stack.length };
       top().children.push(node);
       if (!hb.end || !htmlEnds(lrest(l), node)) html = node;
       else if (hb.type <= 5) {
@@ -743,7 +794,7 @@ function parseBlocks(src) {
       if (!started) { closeForLeaf(depth); started = true; }
       noteBlockStart(top());
       lskipWS(l, 4);
-      const node = { t: 'icode', lines: [lrest(l)] };
+      const node = { t: 'icode', lines: [lcontent()] };
       top().children.push(node);
       icode = node;
       pendingBlanks = [];
@@ -765,7 +816,7 @@ function parseBlocks(src) {
       paraLastLazy = false;
       top().children.push(para);
     }
-    let line = lrest(l);
+    let line = lcontent();
     // Lazy continuation lines lose leading whitespace: inside a list item,
     // up to the item's indent (marked strips it when extracting the item);
     // inside a quote, 4 columns when 4+ are present (marked lexes such a
@@ -797,7 +848,7 @@ function parseBlocks(src) {
 // ---- inline parsing ----
 // Flanking for emphasis: marked's GFM rules treat '~' as non-punctuation.
 function isFlankPunct(ch) {
-  return ch !== '' && ch !== '~' && isUniPunct(ch);
+  return ch !== '' && isUniPunct(ch);
 }
 function isFlankSpacePunct(ch) {
   return ch !== '' && (ch === '~' ? false : isUniSpacePunct(ch));
@@ -857,7 +908,9 @@ function gfmAutolink(text, i, prevCh) {
   if (sub.startsWith('www.') && (prevCh === '' || /[\s*_~(]/.test(prevCh))) {
     const dm = /^(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/.exec(sub.slice(4));
     if (dm && dm[0] !== '') {
-      const raw = 'www.' + dm[0];
+      let raw = 'www.' + dm[0];
+      const lb = raw.search(/\](?=[(\[])/);
+      if (lb >= 0) raw = raw.slice(0, lb);
       const url = backpedal(raw);
       if (url !== 'www.' && url !== '') return { href: 'http://' + url, text: url, end: i + url.length };
     }
@@ -866,7 +919,9 @@ function gfmAutolink(text, i, prevCh) {
   if (m) {
     const dm = /^(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/.exec(sub.slice(m[0].length));
     if (!dm || dm[0] === '') return null;
-    const raw = m[0] + dm[0];
+    let raw = m[0] + dm[0];
+    const lb = raw.search(/\](?=[(\[])/);
+    if (lb >= 0) raw = raw.slice(0, lb);
     const url = backpedal(raw);
     if (url === m[0] || url === '') return null;
     return { href: url, text: url, end: i + url.length };
